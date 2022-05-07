@@ -68,6 +68,24 @@ object KyuubiSQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val ADAPTIVE_STAGE_DYNAMIC_CONFIGURATION_ENABLED =
+    buildConf("spark.sql.adaptive.stage.dynamic.configuration.enabled")
+      .version("1.6.0")
+      .booleanConf
+      .createWithDefault(false)
+
+  val ADAPTIVE_EXPAND_STAGE_ADVISORY_PARTITION_SIZE =
+    buildConf("spark.sql.adaptive.stage.dynamic.expand.advisoryPartitionSizeInBytes")
+      .version("1.6.0")
+      .fallbackConf(ADVISORY_PARTITION_SIZE_IN_BYTES)
+
+  val ADAPTIVE_GENERATE_STAGE_ADVISORY_PARTITION_SIZE =
+    buildConf("spark.sql.adaptive.stage.dynamic.generate.advisoryPartitionSizeInBytes")
+      .version("1.6.0")
+      .fallbackConf(ADVISORY_PARTITION_SIZE_IN_BYTES)
+
+  // TODO ADAPTIVE_JOIN_STAGE_ADVISORY_PARTITION_SIZE
+
   val SQL_CLASSIFICATION = "spark.sql.analyzer.classification"
   val SQL_CLASSIFICATION_ENABLED =
     buildConf("spark.sql.analyzer.classification.enabled")

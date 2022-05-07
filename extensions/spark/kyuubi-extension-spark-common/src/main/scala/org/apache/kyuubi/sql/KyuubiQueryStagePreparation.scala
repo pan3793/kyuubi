@@ -21,7 +21,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.Distribution
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.{SortExec, SparkPlan}
+import org.apache.spark.sql.execution.{ExpandExec, GenerateExec, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
 import org.apache.spark.sql.execution.command.{ResetCommand, SetCommand}
@@ -206,6 +206,7 @@ case class FinalStageConfigIsolation(session: SparkSession) extends Rule[SparkPl
     }
   }
 }
+
 object FinalStageConfigIsolation {
   final val SQL_PREFIX = "spark.sql."
   final val FINAL_STAGE_CONFIG_PREFIX = "spark.sql.finalStage."
@@ -244,4 +245,28 @@ case class FinalStageConfigIsolationCleanRule(session: SparkSession) extends Rul
       }
     }
   }
+}
+
+/**
+ * Adaptive change advisor partition size based on node types in stage. For example, [[ExpandExec]]
+ * usually has large output size than input, we can set a smaller advisor partition size to gain
+ * larger parallelism to achieve better performance.
+ */
+case class AdaptiveChangeStagePartitionRule(session: SparkSession) extends Rule[SparkPlan] {
+
+  override def apply(plan: SparkPlan): SparkPlan = {
+    // this rule has no meaning without AQE
+    if (!conf.getConf(ADAPTIVE_STAGE_DYNAMIC_CONFIGURATION_ENABLED) ||
+      !conf.getConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED)) {
+      return plan
+    }
+
+    plan match {
+      case ExpandExec(projections, output, child) =>
+
+      case GenerateExec(generator, requiredChildOutput, outer, generatorOutput, child) =>
+
+    }
+  }
+
 }
