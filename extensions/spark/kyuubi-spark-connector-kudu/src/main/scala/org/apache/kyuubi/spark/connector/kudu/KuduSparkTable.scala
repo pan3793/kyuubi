@@ -39,5 +39,5 @@ class KuduSparkTable(kuduTable: KuduTable) extends SparkTable with SupportsRead 
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = new KuduBatchScan
 
-  override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = ???
+  override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = new KuduWrite
 }
