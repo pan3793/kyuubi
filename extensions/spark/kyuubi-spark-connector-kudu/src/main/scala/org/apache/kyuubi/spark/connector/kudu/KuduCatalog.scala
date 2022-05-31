@@ -22,6 +22,7 @@ import java.util
 import scala.collection.JavaConverters._
 
 import org.apache.kudu.client.KuduClient
+import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException}
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog, TableChange}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.types.StructType
@@ -48,11 +49,26 @@ class KuduCatalog extends TableCatalog {
     this.kuduClient = builder.build()
   }
 
-  override def listTables(namespace: Array[String]): Array[Identifier] = {
-    kuduClient.getTablesList.getTablesList.asScala.map(Identifier.of(namespace, _)).toArray
+  @throws[NoSuchNamespaceException]
+  override def listTables(namespace: Array[String]): Array[Identifier] = namespace match {
+    case Array() =>
+      kuduClient.getTablesList.getTablesList.asScala.map(Identifier.of(Array(), _)).toArray
+    case _ => throw new NoSuchNamespaceException(namespace)
   }
 
-  override def loadTable(ident: Identifier): Table = new KuduTable(ident.name)
+  @throws[NoSuchTableException]
+  override def loadTable(ident: Identifier): Table = {
+    if (!tableExists(ident)) {
+      throw new NoSuchTableException(ident)
+    }
+    val kuduTable = kuduClient.openTable(ident.name)
+    new KuduSparkTable(kuduTable)
+  }
+
+  override def tableExists(ident: Identifier): Boolean = ident.namespace match {
+    case Array() => kuduClient.tableExists(ident.name)
+    case _ => false
+  }
 
   override def createTable(
       ident: Identifier,

@@ -69,6 +69,18 @@
         </dependency>
 
         <dependency>
+            <groupId>org.apache.kudu</groupId>
+            <artifactId>kudu-spark3_${scala.binary.version}</artifactId>
+            <version>${kudu.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <type>test-jar</type>

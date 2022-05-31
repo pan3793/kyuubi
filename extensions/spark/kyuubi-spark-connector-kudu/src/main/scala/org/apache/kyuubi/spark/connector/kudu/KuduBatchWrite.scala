@@ -17,16 +17,15 @@
 
 package org.apache.kyuubi.spark.connector.kudu
 
-import java.util
+import org.apache.spark.sql.connector.write._
 
-import scala.collection.JavaConverters._
+class KuduBatchWrite extends WriteBuilder with BatchWrite {
 
-import org.apache.spark.sql.connector.catalog.{Table, TableCapability}
-import org.apache.spark.sql.types.StructType
+  override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory = {
+    
+  }
 
-class KuduTable(override val name: String) extends Table {
+  override def commit(messages: Array[WriterCommitMessage]): Unit = ???
 
-  override def schema(): StructType = StructType(Seq.empty)
-
-  override def capabilities(): util.Set[TableCapability] = Set.empty[TableCapability].asJava
+  override def abort(messages: Array[WriterCommitMessage]): Unit = ???
 }
