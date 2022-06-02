@@ -15,11 +15,13 @@
  * limitations under the License.
  */
 
-package org.apache.kyuubi.spark.connector.kudu
+package org.apache.kyuubi.spark.connector.kudu.write
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.connector.write.streaming.StreamingWrite
+
+import org.apache.kyuubi.spark.connector.kudu.KuduSchemaUtils
 
 class KuduWrite extends WriteBuilder with Write {
 
@@ -42,9 +44,14 @@ class KuduBatchWrite extends BatchWrite with DataWriterFactory {
     new KuduWriter
 }
 
-class KuduWriter extends DataWriter[InternalRow] {
+class KuduWriter(
+    writeJob: KuduWriteJobContext) extends DataWriter[InternalRow] {
 
-  override def write(record: InternalRow): Unit = ???
+  private lazy val kuduSchema = KuduSchemaUtils.toKudu(writeJob.sparkSchema)
+
+  override def write(record: InternalRow): Unit = {
+    kuduSchema.newPartialRow()
+  }
 
   override def commit(): WriterCommitMessage = ???
 

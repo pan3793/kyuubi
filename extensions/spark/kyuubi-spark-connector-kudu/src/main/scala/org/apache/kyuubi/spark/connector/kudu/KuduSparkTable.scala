@@ -18,11 +18,10 @@
 package org.apache.kyuubi.spark.connector.kudu
 
 import java.util
-
 import scala.collection.JavaConverters._
-
 import org.apache.kudu.client.KuduTable
-import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table => SparkTable, TableCapability}
+import org.apache.kyuubi.spark.connector.kudu.write.KuduWrite
+import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, TableCapability, Table => SparkTable}
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
