@@ -18,9 +18,8 @@
 package org.apache.kyuubi.jdbc.hive.auth;
 
 import java.security.PrivilegedExceptionAction;
+import java.util.Base64;
 import javax.security.auth.Subject;
-import org.apache.commons.codec.binary.Base64;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.ietf.jgss.GSSContext;
 import org.ietf.jgss.GSSManager;
 import org.ietf.jgss.GSSName;
@@ -31,21 +30,11 @@ public final class HttpAuthUtils {
   public static final String AUTHORIZATION = "Authorization";
   public static final String NEGOTIATE = "Negotiate";
 
-  /**
-   * @return Stringified Base64 encoded kerberosAuthHeader on success
-   * @throws Exception
-   */
+  /** @return Stringified Base64 encoded kerberosAuthHeader on success */
   public static String getKerberosServiceTicket(
-      String principal, String host, Subject loggedInSubject) throws Exception {
-    String serverPrincipal = HadoopThriftAuthBridge.getBridge().getServerPrincipal(principal, host);
-    if (loggedInSubject != null) {
-      return Subject.doAs(loggedInSubject, new HttpKerberosClientAction(serverPrincipal));
-    } else {
-      // JAAS login from ticket cache to setup the client UserGroupInformation
-      UserGroupInformation clientUGI =
-          HadoopThriftAuthBridge.getBridge().getCurrentUGIWithConf("kerberos");
-      return clientUGI.doAs(new HttpKerberosClientAction(serverPrincipal));
-    }
+      String serverPrinciple, String host, Subject loggedInSubject) throws Exception {
+    String spn = KerberosUtils.canonicalPrincipal(serverPrinciple, host);
+    return Subject.doAs(loggedInSubject, new HttpKerberosClientAction(spn));
   }
 
   private HttpAuthUtils() {
@@ -58,11 +47,9 @@ public final class HttpAuthUtils {
    */
   public static class HttpKerberosClientAction implements PrivilegedExceptionAction<String> {
     private final String serverPrincipal;
-    private final Base64 base64codec;
 
     public HttpKerberosClientAction(String serverPrincipal) {
       this.serverPrincipal = serverPrincipal;
-      base64codec = new Base64(0);
     }
 
     @Override
@@ -84,7 +71,7 @@ public final class HttpAuthUtils {
       byte[] outToken = gssContext.initSecContext(inToken, 0, inToken.length);
       gssContext.dispose();
       // Base64 encoded and stringified token for server
-      return new String(base64codec.encode(outToken));
+      return Base64.getEncoder().encodeToString(outToken);
     }
   }
 }

@@ -17,18 +17,25 @@
 
 package org.apache.kyuubi.jdbc.hive.auth;
 
-import org.apache.hadoop.io.Text;
-import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
+import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 
-/** A delegation token identifier that is specific to Hive. */
-public class DelegationTokenIdentifier extends AbstractDelegationTokenIdentifier {
-  public static final Text HIVE_DELEGATION_KIND = new Text("HIVE_DELEGATION_TOKEN");
+public class KerberosUtils {
 
-  /** Create an empty delegation token identifier for reading into. */
-  public DelegationTokenIdentifier() {}
+  private static final String HOSTNAME_PATTERN = "_HOST";
 
-  @Override
-  public Text getKind() {
-    return HIVE_DELEGATION_KIND;
+  public static String[] splitPrincipal(String principal) {
+    return principal.split("[/@]");
+  }
+
+  public static String canonicalPrincipal(String principal, String hostname) {
+    String[] names = splitPrincipal(principal);
+    if (names.length != 3) {
+      throw new IllegalArgumentException("Kerberos principal should have 3 parts: " + principal);
+    }
+    if (!names[1].equals(HOSTNAME_PATTERN)) {
+      return principal;
+    }
+    return format("%s/%s@%s", names[0], hostname.toLowerCase(ENGLISH), names[2]);
   }
 }

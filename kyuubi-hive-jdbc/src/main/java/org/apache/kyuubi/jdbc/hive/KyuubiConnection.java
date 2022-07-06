@@ -62,14 +62,10 @@ import org.apache.http.protocol.HttpContext;
 import org.apache.http.ssl.SSLContexts;
 import org.apache.kyuubi.jdbc.hive.Utils.JdbcConnectionParams;
 import org.apache.kyuubi.jdbc.hive.adapter.SQLConnection;
-import org.apache.kyuubi.jdbc.hive.auth.KerberosSaslHelper;
-import org.apache.kyuubi.jdbc.hive.auth.PlainSaslHelper;
-import org.apache.kyuubi.jdbc.hive.auth.SaslQOP;
+import org.apache.kyuubi.jdbc.hive.auth.*;
 import org.apache.kyuubi.jdbc.hive.cli.FetchType;
 import org.apache.kyuubi.jdbc.hive.cli.RowSet;
 import org.apache.kyuubi.jdbc.hive.cli.RowSetFactory;
-import org.apache.kyuubi.jdbc.hive.cli.SessionUtils;
-import org.apache.kyuubi.jdbc.hive.common.HiveAuthUtils;
 import org.apache.kyuubi.jdbc.hive.logs.KyuubiLoggable;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
@@ -93,7 +89,6 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
   private final Map<String, String> sessConfMap;
   private JdbcConnectionParams connParams;
   private TTransport transport;
-  private boolean assumeSubject;
   private TCLIService.Iface client;
   private boolean isClosed = true;
   private SQLWarning warningChain = null;
@@ -385,8 +380,6 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
   }
 
   private void openTransport() throws Exception {
-    assumeSubject =
-        AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT.equals(sessConfMap.get(AUTH_KERBEROS_AUTH_TYPE));
     transport = isHttpTransportMode() ? createHttpTransport() : createBinaryTransport();
     if (!transport.isOpen()) {
       transport.open();
@@ -448,17 +441,29 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
         customCookies.put(key.substring(HTTP_COOKIE_PREFIX.length()), entry.getValue());
       }
     }
-    // Configure http client for kerberos/password based authentication
-    if (isKerberosAuthMode()) {
-      if (assumeSubject) {
-        // With this option, we're assuming that the external application,
-        // using the JDBC driver has done a JAAS kerberos login already
-        AccessControlContext context = AccessController.getContext();
-        loggedInSubject = Subject.getSubject(context);
-        if (loggedInSubject == null) {
-          throw new KyuubiSQLException("The Subject is not set");
-        }
-      }
+    if (!isSaslAuthMode() || isPlainSaslAuthMode()) {
+      /*
+       * Add an interceptor to pass username/password in the header. In https mode, the entire
+       * information is encrypted
+       */
+      requestInterceptor =
+          new HttpBasicAuthInterceptor(
+              getUserName(),
+              getPassword(),
+              cookieStore,
+              cookieName,
+              useSsl,
+              additionalHttpHeaders,
+              customCookies);
+    } else if (isDelegationTokenAuthMode()) {
+      // Check for delegation token, if present add it in the header
+      String tokenStr = getClientDelegationToken();
+      requestInterceptor =
+          new HttpTokenAuthInterceptor(
+              tokenStr, cookieStore, cookieName, useSsl, additionalHttpHeaders, customCookies);
+    } else {
+      // Configure http client for kerberos based authentication
+      loggedInSubject = createSubject();
       /*
        * Add an interceptor which sets the appropriate header in the request. It does the kerberos
        * authentication and get the final service ticket, for sending to the server before every
@@ -474,28 +479,6 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
               useSsl,
               additionalHttpHeaders,
               customCookies);
-    } else {
-      // Check for delegation token, if present add it in the header
-      String tokenStr = getClientDelegationToken(sessConfMap);
-      if (tokenStr != null) {
-        requestInterceptor =
-            new HttpTokenAuthInterceptor(
-                tokenStr, cookieStore, cookieName, useSsl, additionalHttpHeaders, customCookies);
-      } else {
-        /*
-         * Add an interceptor to pass username/password in the header. In https mode, the entire
-         * information is encrypted
-         */
-        requestInterceptor =
-            new HttpBasicAuthInterceptor(
-                getUserName(),
-                getPassword(),
-                cookieStore,
-                cookieName,
-                useSsl,
-                additionalHttpHeaders,
-                customCookies);
-      }
     }
     // Configure http client for cookie based authentication
     if (isCookieEnabled) {
@@ -613,15 +596,15 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
       String sslTrustStorePassword = sessConfMap.get(SSL_TRUST_STORE_PASSWORD);
 
       if (sslTrustStore == null || sslTrustStore.isEmpty()) {
-        transport = HiveAuthUtils.getSSLSocket(host, port, loginTimeout);
+        transport = ThriftUtils.getSSLSocket(host, port, loginTimeout);
       } else {
         transport =
-            HiveAuthUtils.getSSLSocket(
+            ThriftUtils.getSSLSocket(
                 host, port, loginTimeout, sslTrustStore, sslTrustStorePassword);
       }
     } else {
       // get non-SSL socket transport
-      transport = HiveAuthUtils.getSocketTransport(host, port, loginTimeout);
+      transport = ThriftUtils.getSocketTransport(host, port, loginTimeout);
     }
     return transport;
   }
@@ -638,52 +621,47 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
     try {
       TTransport socketTransport = createUnderlyingTransport();
       // handle secure connection if specified
-      if (!AUTH_SIMPLE.equals(sessConfMap.get(AUTH_TYPE))) {
-        // If Kerberos
-        Map<String, String> saslProps = new HashMap<>();
-        SaslQOP saslQOP = SaslQOP.AUTH;
-        if (sessConfMap.containsKey(AUTH_QOP)) {
-          try {
-            saslQOP = SaslQOP.fromString(sessConfMap.get(AUTH_QOP));
-          } catch (IllegalArgumentException e) {
-            throw new KyuubiSQLException(
-                "Invalid " + AUTH_QOP + " parameter. " + e.getMessage(), "42000", e);
-          }
-          saslProps.put(Sasl.QOP, saslQOP.toString());
-        } else {
-          // If the client did not specify qop then just negotiate the one supported by server
-          saslProps.put(Sasl.QOP, "auth-conf,auth-int,auth");
-        }
-        saslProps.put(Sasl.SERVER_AUTH, "true");
-        if (sessConfMap.containsKey(AUTH_PRINCIPAL)) {
-          transport =
-              KerberosSaslHelper.getKerberosTransport(
-                  sessConfMap.get(AUTH_PRINCIPAL), host, socketTransport, saslProps, assumeSubject);
-        } else {
-          // If there's a delegation token available then use token based connection
-          String tokenStr = getClientDelegationToken(sessConfMap);
-          if (tokenStr != null) {
-            transport =
-                KerberosSaslHelper.getTokenTransport(tokenStr, host, socketTransport, saslProps);
-          } else {
-            // we are using PLAIN Sasl connection with user/password
-            String userName = getUserName();
-            String passwd = getPassword();
-            // Overlay the SASL transport on top of the base socket transport (SSL or non-SSL)
-            transport = PlainSaslHelper.getPlainTransport(userName, passwd, socketTransport);
-          }
-        }
-      } else {
+      if (!isSaslAuthMode()) {
         // Raw socket connection (non-sasl)
-        transport = socketTransport;
+        return socketTransport;
+      } else if (isPlainSaslAuthMode()) {
+        // we are using PLAIN Sasl connection with user/password
+        String userName = getUserName();
+        String passwd = getPassword();
+        // Overlay the SASL transport on top of the base socket transport (SSL or non-SSL)
+        return PlainSaslHelper.getPlainTransport(userName, passwd, socketTransport);
       }
+      // If Kerberos
+      Map<String, String> saslProps = new HashMap<>();
+      saslProps.put(Sasl.SERVER_AUTH, "true");
+      // If the client did not specify qop then just negotiate the one supported by server
+      saslProps.put(Sasl.QOP, "auth-conf,auth-int,auth");
+      if (sessConfMap.containsKey(AUTH_QOP)) {
+        try {
+          SaslQOP saslQOP = SaslQOP.fromString(sessConfMap.get(AUTH_QOP));
+          saslProps.put(Sasl.QOP, saslQOP.toString());
+        } catch (IllegalArgumentException e) {
+          throw new KyuubiSQLException(
+              "Invalid " + AUTH_QOP + " parameter. " + e.getMessage(), "42000", e);
+        }
+      }
+
+      if (isDelegationTokenAuthMode()) {
+        // If there's a delegation token available then use token based connection
+        String tokenStr = getClientDelegationToken();
+        return KerberosSaslHelper.getTokenTransport(tokenStr, host, socketTransport, saslProps);
+      }
+
+      Subject subject = createSubject();
+      String serverPrincipal = sessConfMap.get(AUTH_PRINCIPAL);
+      return KerberosSaslHelper.createSubjectAssumedTransport(
+          subject, serverPrincipal, socketTransport, saslProps);
     } catch (SaslException e) {
       throw new KyuubiSQLException(
           "Could not create secure connection to " + jdbcUriString + ": " + e.getMessage(),
           " 08S01",
           e);
     }
-    return transport;
   }
 
   SSLConnectionSocketFactory getTwoWaySSLSocketFactory() throws SQLException {
@@ -733,17 +711,13 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
   }
 
   // Lookup the delegation token. First in the connection URL, then Configuration
-  private String getClientDelegationToken(Map<String, String> jdbcConnConf) throws SQLException {
-    String tokenStr = null;
-    if (AUTH_TOKEN.equalsIgnoreCase(jdbcConnConf.get(AUTH_TYPE))) {
-      // check delegation token in job conf if any
-      try {
-        tokenStr = SessionUtils.getTokenStrForm(HS2_CLIENT_TOKEN);
-      } catch (IOException e) {
-        throw new KyuubiSQLException("Error reading token ", e);
-      }
+  private String getClientDelegationToken() throws SQLException {
+    // check delegation token in job conf if any
+    try {
+      return HadoopShim.getTokenStrForm(HS2_CLIENT_TOKEN);
+    } catch (Exception e) {
+      throw new KyuubiSQLException("Error reading token ", e);
     }
-    return tokenStr;
   }
 
   private void openSession() throws SQLException {
@@ -844,14 +818,69 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
     return "true".equalsIgnoreCase(sessConfMap.get(USE_SSL));
   }
 
+  private boolean isSaslAuthMode() {
+    return !AUTH_SIMPLE.equalsIgnoreCase(sessConfMap.get(AUTH_TYPE));
+  }
+
+  private boolean isFromSubjectAuthMode() {
+    return isSaslAuthMode()
+        && hasSessionValue(AUTH_PRINCIPAL)
+        && AUTH_FROM_SUBJECT.equalsIgnoreCase(sessConfMap.get(AUTH_KERBEROS_AUTH_TYPE));
+  }
+
+  private boolean isKeytabAuthMode() {
+    return isSaslAuthMode()
+        && hasSessionValue(AUTH_PRINCIPAL)
+        && hasSessionValue(AUTH_KYUUBI_CLIENT_PRINCIPAL)
+        && hasSessionValue(AUTH_KYUUBI_CLIENT_KEYTAB);
+  }
+
+  private boolean isTgtCacheAuthMode() {
+    return isSaslAuthMode()
+        && hasSessionValue(AUTH_PRINCIPAL)
+        && !hasSessionValue(AUTH_KYUUBI_CLIENT_PRINCIPAL)
+        && !hasSessionValue(AUTH_KYUUBI_CLIENT_KEYTAB);
+  }
+
+  private boolean isDelegationTokenAuthMode() {
+    return isSaslAuthMode()
+        && !hasSessionValue(AUTH_PRINCIPAL)
+        && AUTH_TOKEN.equalsIgnoreCase(sessConfMap.get(AUTH_TYPE));
+  }
+
+  private boolean isPlainSaslAuthMode() {
+    return isSaslAuthMode()
+        && !hasSessionValue(AUTH_PRINCIPAL)
+        && !AUTH_TOKEN.equalsIgnoreCase(sessConfMap.get(AUTH_TYPE));
+  }
+
   private boolean isKerberosAuthMode() {
     return !AUTH_SIMPLE.equals(sessConfMap.get(AUTH_TYPE))
         && sessConfMap.containsKey(AUTH_PRINCIPAL);
   }
 
+  private Subject createSubject() {
+    if (isFromSubjectAuthMode()) {
+      AccessControlContext context = AccessController.getContext();
+      return Subject.getSubject(context);
+    } else if (isTgtCacheAuthMode()) {
+      KerberosAuthentication krbAuth = new KerberosAuthentication();
+      CachingKerberosAuthentication cachingKrbAuth = new CachingKerberosAuthentication(krbAuth);
+      return cachingKrbAuth.getSubject();
+    } else if (isKeytabAuthMode()) {
+      String principal = sessConfMap.get(AUTH_KYUUBI_CLIENT_PRINCIPAL);
+      String keytab = sessConfMap.get(AUTH_KYUUBI_CLIENT_KEYTAB);
+      KerberosAuthentication krbAuth = new KerberosAuthentication(principal, keytab);
+      CachingKerberosAuthentication cachingKrbAuth = new CachingKerberosAuthentication(krbAuth);
+      return cachingKrbAuth.getSubject();
+    } else {
+      // This should never happen
+      throw new IllegalArgumentException("Unsupported auth mode");
+    }
+  }
+
   private boolean isHttpTransportMode() {
-    String transportMode = sessConfMap.get(TRANSPORT_MODE);
-    return transportMode != null && (transportMode.equalsIgnoreCase("http"));
+    return "http".equalsIgnoreCase(sessConfMap.get(TRANSPORT_MODE));
   }
 
   private void logZkDiscoveryMessage(String message) {
@@ -860,10 +889,15 @@ public class KyuubiConnection implements SQLConnection, KyuubiLoggable {
     }
   }
 
+  private boolean hasSessionValue(String varName) {
+    String varValue = sessConfMap.get(varName);
+    return !(varValue == null || varValue.isEmpty());
+  }
+
   /** Lookup varName in sessConfMap, if its null or empty return the default value varDefault */
   private String getSessionValue(String varName, String varDefault) {
     String varValue = sessConfMap.get(varName);
-    if ((varValue == null) || varValue.isEmpty()) {
+    if (varValue == null || varValue.isEmpty()) {
       varValue = varDefault;
     }
     return varValue;

@@ -18,64 +18,160 @@
 package org.apache.kyuubi.jdbc.hive.auth;
 
 import java.io.IOException;
+import java.security.PrivilegedExceptionAction;
+import java.util.Base64;
 import java.util.Map;
+import javax.security.auth.Subject;
+import javax.security.auth.callback.*;
+import javax.security.sasl.RealmCallback;
+import javax.security.sasl.RealmChoiceCallback;
 import javax.security.sasl.SaslException;
 import org.apache.thrift.transport.TSaslClientTransport;
 import org.apache.thrift.transport.TTransport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class KerberosSaslHelper {
-
-  public static TTransport getKerberosTransport(
-      String principal,
-      String host,
-      TTransport underlyingTransport,
-      Map<String, String> saslProps,
-      boolean assumeSubject)
-      throws SaslException {
-    try {
-      String[] names = principal.split("[/@]");
-      if (names.length != 3) {
-        throw new IllegalArgumentException("Kerberos principal should have 3 parts: " + principal);
-      }
-
-      if (assumeSubject) {
-        return createSubjectAssumedTransport(principal, underlyingTransport, saslProps);
-      } else {
-        HadoopThriftAuthBridge.Client authBridge =
-            HadoopThriftAuthBridge.getBridge().createClientWithConf("kerberos");
-        return authBridge.createClientTransport(
-            principal, host, "KERBEROS", null, underlyingTransport, saslProps);
-      }
-    } catch (IOException e) {
-      throw new SaslException("Failed to open client transport", e);
-    }
-  }
+  private static final Logger LOG = LoggerFactory.getLogger(KerberosSaslHelper.class);
 
   public static TTransport createSubjectAssumedTransport(
-      String principal, TTransport underlyingTransport, Map<String, String> saslProps)
-      throws IOException {
-    String[] names = principal.split("[/@]");
-    try {
-      TTransport saslTransport =
-          new TSaslClientTransport(
-              "GSSAPI", null, names[0], names[1], saslProps, null, underlyingTransport);
-      return new TSubjectAssumingTransport(saslTransport);
-    } catch (SaslException se) {
-      throw new IOException("Could not instantiate SASL transport", se);
-    }
+      Subject subject,
+      String serverPrincipal,
+      TTransport underlyingTransport,
+      Map<String, String> saslProps)
+      throws SaslException {
+    String[] names = KerberosUtils.splitPrincipal(serverPrincipal);
+    TTransport saslTransport =
+        new TSaslClientTransport(
+            "GSSAPI", null, names[0], names[1], saslProps, null, underlyingTransport);
+    return new TSubjectTransport(saslTransport, subject);
   }
 
   public static TTransport getTokenTransport(
       String tokenStr, String host, TTransport underlyingTransport, Map<String, String> saslProps)
       throws SaslException {
-    HadoopThriftAuthBridge.Client authBridge =
-        HadoopThriftAuthBridge.getBridge().createClientWithConf("kerberos");
-
     try {
-      return authBridge.createClientTransport(
-          null, host, "DIGEST", tokenStr, underlyingTransport, saslProps);
+      return createClientTransport(
+          null, host, "DIGEST-MD5", tokenStr, underlyingTransport, saslProps);
     } catch (IOException e) {
       throw new SaslException("Failed to open client transport", e);
+    }
+  }
+
+  /**
+   * Create a client-side SASL transport that wraps an underlying transport.
+   *
+   * @param mechanism The authentication method to use. DIGEST-MD5, GSSAPI.
+   * @param serverPrincipal The Kerberos principal of the target server.
+   * @param underlyingTransport The underlying transport mechanism, usually a TSocket.
+   * @param saslProps the sasl properties to create the client with
+   */
+  public static TTransport createClientTransport(
+      String serverPrincipal,
+      String host,
+      String mechanism,
+      String tokenStrForm,
+      final TTransport underlyingTransport,
+      final Map<String, String> saslProps)
+      throws IOException {
+
+    Subject subject;
+    TTransport saslTransport;
+    switch (mechanism) {
+      case "GSSAPI":
+        String canonicalServerPrincipal = KerberosUtils.canonicalPrincipal(serverPrincipal, host);
+        String[] names = KerberosUtils.splitPrincipal(canonicalServerPrincipal);
+        try {
+          subject = HadoopShim.UserGroupInformation.getCurrentSubject();
+          return Subject.doAs(
+              subject,
+              (PrivilegedExceptionAction<TSubjectTransport>)
+                  () -> {
+                    TTransport saslTransport1 =
+                        new TSaslClientTransport(
+                            mechanism,
+                            null,
+                            names[0],
+                            names[1],
+                            saslProps,
+                            null,
+                            underlyingTransport);
+                    Subject subject1 = HadoopShim.UserGroupInformation.getCurrentSubject();
+                    return new TSubjectTransport(saslTransport1, subject1);
+                  });
+        } catch (Exception se) {
+          throw new IOException("Could not instantiate SASL transport", se);
+        }
+
+      case "DIGEST-MD5":
+        Object token = HadoopShim.Token.newInstance();
+        HadoopShim.Token.decodeFromUrlString(token, tokenStrForm);
+        byte[] identifier = HadoopShim.Token.getIdentifier(token);
+        byte[] password = HadoopShim.Token.getPassword(token);
+        saslTransport =
+            new TSaslClientTransport(
+                mechanism,
+                null,
+                null,
+                "default",
+                saslProps,
+                new SaslClientCallbackHandler(identifier, password),
+                underlyingTransport);
+        subject = HadoopShim.UserGroupInformation.getCurrentSubject();
+        return new TSubjectTransport(saslTransport, subject);
+
+      default:
+        throw new IOException("Unsupported authentication mechanism: " + mechanism);
+    }
+  }
+
+  private static class SaslClientCallbackHandler implements CallbackHandler {
+    private final String userName;
+    private final char[] userPassword;
+
+    public SaslClientCallbackHandler(byte[] identifier, byte[] password) {
+      this.userName = encodeIdentifier(identifier);
+      this.userPassword = encodePassword(password);
+    }
+
+    @Override
+    public void handle(Callback[] callbacks) throws UnsupportedCallbackException {
+      NameCallback nc = null;
+      PasswordCallback pc = null;
+      RealmCallback rc = null;
+      for (Callback callback : callbacks) {
+        if (callback instanceof RealmChoiceCallback) {
+          continue;
+        } else if (callback instanceof NameCallback) {
+          nc = (NameCallback) callback;
+        } else if (callback instanceof PasswordCallback) {
+          pc = (PasswordCallback) callback;
+        } else if (callback instanceof RealmCallback) {
+          rc = (RealmCallback) callback;
+        } else {
+          throw new UnsupportedCallbackException(callback, "Unrecognized SASL client callback");
+        }
+      }
+      if (nc != null) {
+        LOG.debug("SASL client callback: setting username: {}", userName);
+        nc.setName(userName);
+      }
+      if (pc != null) {
+        LOG.debug("SASL client callback: setting userPassword");
+        pc.setPassword(userPassword);
+      }
+      if (rc != null) {
+        LOG.debug("SASL client callback: setting realm: {}", rc.getDefaultText());
+        rc.setText(rc.getDefaultText());
+      }
+    }
+
+    static String encodeIdentifier(byte[] identifier) {
+      return Base64.getEncoder().encodeToString(identifier);
+    }
+
+    static char[] encodePassword(byte[] password) {
+      return Base64.getEncoder().encodeToString(password).toCharArray();
     }
   }
 

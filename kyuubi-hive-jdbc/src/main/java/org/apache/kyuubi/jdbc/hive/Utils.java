@@ -85,11 +85,13 @@ public class Utils {
     public static final String AUTH_QOP = "saslQop";
     public static final String AUTH_SIMPLE = "noSasl";
     public static final String AUTH_TOKEN = "delegationToken";
-    public static final String AUTH_USER = "user";
     public static final String AUTH_PRINCIPAL = "principal";
+    public static final String AUTH_KYUUBI_CLIENT_PRINCIPAL = "kyuubiClientPrinciple";
+    public static final String AUTH_KYUUBI_CLIENT_KEYTAB = "kyuubiClientKeytab";
+    public static final String AUTH_USER = "user";
     public static final String AUTH_PASSWD = "password";
     public static final String AUTH_KERBEROS_AUTH_TYPE = "kerberosAuthType";
-    public static final String AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT = "fromSubject";
+    public static final String AUTH_FROM_SUBJECT = "fromSubject";
     public static final String ANONYMOUS_USER = "anonymous";
     public static final String ANONYMOUS_PASSWD = "anonymous";
     public static final String USE_SSL = "ssl";
