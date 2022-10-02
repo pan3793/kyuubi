@@ -23,16 +23,20 @@ import org.apache.spark.sql.connector.write.streaming.StreamingWrite
 
 import org.apache.kyuubi.spark.connector.kudu.KuduSchemaUtils
 
-class KuduWrite extends WriteBuilder with Write {
+class KuduWriteBuilder(
+  writeJob: KuduWriteJobContext
+) extends WriteBuilder with Write {
 
-  override def toBatch: BatchWrite = new KuduBatchWrite
+  override def toBatch: BatchWrite = new KuduBatchWriterFactory(writeJob)
 
   override def toStreaming: StreamingWrite = super.toStreaming
 
   override def build(): Write = this
 }
 
-class KuduBatchWrite extends BatchWrite with DataWriterFactory {
+class KuduBatchWriterFactory(
+  writeJob: KuduWriteJobContext
+) extends BatchWrite with DataWriterFactory {
 
   override def commit(messages: Array[WriterCommitMessage]): Unit = {}
 
@@ -41,7 +45,7 @@ class KuduBatchWrite extends BatchWrite with DataWriterFactory {
   override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory = this
 
   override def createWriter(partitionId: Int, taskId: Long): DataWriter[InternalRow] =
-    new KuduWriter
+    new KuduWriter(writeJob)
 }
 
 class KuduWriter(
@@ -53,7 +57,7 @@ class KuduWriter(
     kuduSchema.newPartialRow()
   }
 
-  override def commit(): WriterCommitMessage = ???
+  override def commit(): WriterCommitMessage = KuduWriteMessage()
 
   override def abort(): Unit = ???
 

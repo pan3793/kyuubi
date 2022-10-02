@@ -18,15 +18,18 @@
 package org.apache.kyuubi.spark.connector.kudu
 
 import java.util
+
 import scala.collection.JavaConverters._
+
 import org.apache.kudu.client.KuduTable
-import org.apache.kyuubi.spark.connector.kudu.write.KuduWrite
-import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, TableCapability, Table => SparkTable}
+import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table => SparkTable, TableCapability}
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+
+import org.apache.kyuubi.spark.connector.kudu.write.{KuduWriteBuilder, KuduWriteJobContext}
 
 class KuduSparkTable(kuduTable: KuduTable) extends SparkTable with SupportsRead with SupportsWrite {
 
@@ -38,5 +41,8 @@ class KuduSparkTable(kuduTable: KuduTable) extends SparkTable with SupportsRead 
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = new KuduBatchScan
 
-  override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = new KuduWrite
+  override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
+    val writeJob = KuduWriteJobContext(info.schema())
+    new KuduWriteBuilder(writeJob)
+  }
 }
