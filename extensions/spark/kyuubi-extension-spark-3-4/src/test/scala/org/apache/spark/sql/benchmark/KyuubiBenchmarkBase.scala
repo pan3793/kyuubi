@@ -27,7 +27,7 @@ import org.scalatest.Assertions._
 trait KyuubiBenchmarkBase {
   var output: Option[OutputStream] = None
 
-  private val prefix = {
+  private lazy val prefix = {
     val benchmarkClasses = ClassPath.from(Thread.currentThread.getContextClassLoader)
       .getTopLevelClassesRecursive("org.apache.spark.sql").asScala.toArray
     assert(benchmarkClasses.nonEmpty)
