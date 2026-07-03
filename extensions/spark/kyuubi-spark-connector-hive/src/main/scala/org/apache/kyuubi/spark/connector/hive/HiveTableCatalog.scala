@@ -179,9 +179,24 @@ class HiveTableCatalog(sparkSession: SparkSession)
       }
     }
 
+  override def tableExists(ident: Identifier): Boolean =
+    withSparkSQLConf(LEGACY_NON_IDENTIFIER_OUTPUT_CATALOG_NAME -> "true") {
+      catalog.tableExists(ident.asTableIdentifier)
+    }
+
   override def loadTable(ident: Identifier): Table =
     withSparkSQLConf(LEGACY_NON_IDENTIFIER_OUTPUT_CATALOG_NAME -> "true") {
-      HiveTable(sparkSession, catalog.getTableMetadata(ident.asTableIdentifier), this)
+      val tableIdent = ident.asTableIdentifier
+      // Since Spark 4.1, SessionCatalog.requireTableExists builds a multipart identifier
+      // via name.catalog.get, which throws NoSuchElementException when the TableIdentifier
+      // has no catalog attached. KSHC deliberately does not attach the catalog name
+      // (KYUUBI #5023), so check existence explicitly and throw the V2
+      // NoSuchTableException(Identifier) to honor the TableCatalog contract across
+      // Spark versions.
+      if (!catalog.tableExists(tableIdent)) {
+        throw new NoSuchTableException(ident)
+      }
+      HiveTable(sparkSession, catalog.getTableMetadata(tableIdent), this)
     }
 
   // scalastyle:off
