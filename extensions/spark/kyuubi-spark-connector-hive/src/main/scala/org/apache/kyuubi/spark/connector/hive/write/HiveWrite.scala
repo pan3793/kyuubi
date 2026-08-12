@@ -67,25 +67,20 @@ case class HiveWrite(
   private val tableLocation = hiveTable.getDataLocation
 
   private val allColumns = info.schema().toAttributes
-  // Split data and partition columns by name rather than by position. Users can create a
-  // partitioned table whose partition columns are not the trailing columns of the schema
-  // (e.g. df.write.partitionBy("mid_col")), so a positional take/takeRight would mis-classify
-  // columns and lead the metastore to reject the written partition spec. Match names with the
-  // session resolver because the Hive metastore lower-cases partition column names while the
-  // write schema preserves the user's original case. See KYUUBI #6403.
+  // Partition columns are not necessarily the trailing columns of the query schema, e.g.
+  // df.write.partitionBy("mid_col"), so split them by name instead of by position. The metastore
+  // lower-cases partition column names while the query keeps the user's case, hence the resolver.
+  // See KYUUBI #6403.
   private val resolver = sparkSession.sessionState.conf.resolver
   private def isPartitionColumn(name: String): Boolean =
     table.partitionColumnNames.exists(resolver(_, name))
-  // partColumns keeps the query's original column case so requiredOrdering() resolves against the
-  // query.
+  // partColumns keeps the query's case so requiredOrdering() resolves against the query.
   private val (partColumns, dataColumns) =
     allColumns.partition(col => isPartitionColumn(col.name))
 
-  // SPARK-28054: the Hive metastore keeps partition columns with lower-cased names, so the written
-  // partition directories must use lower-cased names; otherwise loadDynamicPartitions rejects the
-  // spec with "contains non-partition columns" when the schema preserves the user's original case.
-  // Rename via withName to keep the same exprId, so the value projection against allColumns is
-  // unaffected. See KYUUBI #6403.
+  // SPARK-28054: partition directories must use the lower-cased names kept by the metastore,
+  // otherwise loadDynamicPartitions rejects the spec as "contains non-partition columns".
+  // withName retains the exprId, so the projection against allColumns is unaffected.
   private val outputPartColumns: Seq[AttributeReference] =
     partColumns.map(col => col.withName(col.name.toLowerCase(Locale.ROOT)))
 

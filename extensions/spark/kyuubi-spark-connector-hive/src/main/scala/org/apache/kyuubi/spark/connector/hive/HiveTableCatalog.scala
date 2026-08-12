@@ -398,33 +398,10 @@ class HiveTableCatalog(sparkSession: SparkSession)
         throw new TableAlreadyExistsException(ident)
     }
 
-    // Preserve the requested schema order on the returned table so the subsequent CTAS write
-    // resolves output columns against the original order instead of the metastore-reordered one.
-    // Use newCatalogTable rather than CatalogTable.copy, whose arity varies across Spark versions
-    // and would fail with NoSuchMethodError at runtime. See KYUUBI #6403.
-    val table = loadTable(ident).asInstanceOf[HiveTable]
-    val catalogTable = table.catalogTable
-    table.copy(catalogTable = newCatalogTable(
-      identifier = catalogTable.identifier,
-      tableType = catalogTable.tableType,
-      storage = catalogTable.storage,
-      schema = schema,
-      provider = catalogTable.provider,
-      partitionColumnNames = catalogTable.partitionColumnNames,
-      bucketSpec = catalogTable.bucketSpec,
-      owner = catalogTable.owner,
-      createTime = catalogTable.createTime,
-      lastAccessTime = catalogTable.lastAccessTime,
-      createVersion = catalogTable.createVersion,
-      properties = catalogTable.properties,
-      stats = catalogTable.stats,
-      viewText = catalogTable.viewText,
-      comment = catalogTable.comment,
-      unsupportedFeatures = catalogTable.unsupportedFeatures,
-      tracksPartitionsInCatalog = catalogTable.tracksPartitionsInCatalog,
-      schemaPreservesCase = catalogTable.schemaPreservesCase,
-      ignoredProperties = catalogTable.ignoredProperties,
-      viewOriginalText = catalogTable.viewOriginalText))
+    // The metastore moves partition columns to the end of the schema, while a CTAS query keeps the
+    // requested order and Spark resolves the output columns by position, so report the requested
+    // order on the returned table. See KYUUBI #6403.
+    loadTable(ident).asInstanceOf[HiveTable].copy(requestedSchema = Some(schema))
   }
 
   override def alterTable(ident: Identifier, changes: TableChange*): Table = {

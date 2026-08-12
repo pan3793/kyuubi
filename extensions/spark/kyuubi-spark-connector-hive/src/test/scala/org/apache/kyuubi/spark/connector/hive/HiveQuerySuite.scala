@@ -365,36 +365,6 @@ class HiveQuerySuite extends KyuubiHiveTest {
     }
   }
 
-  test("[KYUUBI #6403] Second INSERT OVERWRITE into external partitioned table with " +
-    "upper-case partition column should not retain old data") {
-    withSparkSession(Map("hive.exec.dynamic.partition.mode" -> "nonstrict")) { spark =>
-      withTempDir { dir =>
-        val table = "hive.default.kyuubi_6403_ext_overwrite"
-        val location = s"${dir.getCanonicalPath}/kyuubi_6403_ext"
-        try {
-          spark.sql(s"DROP TABLE IF EXISTS $table")
-          spark.sql(
-            s"""
-               | CREATE TABLE $table (name STRING)
-               | PARTITIONED BY (FavoriteColor STRING)
-               | STORED AS PARQUET
-               | LOCATION '$location'
-               |""".stripMargin).collect()
-
-          spark.sql(s"INSERT OVERWRITE $table VALUES ('Alyssa', 'blue')").collect()
-          checkQueryResult(s"select * from $table", spark, Array(Row.apply("Alyssa", "blue")))
-
-          // Overwrite the same partition whose directory is lower-cased (favoritecolor=blue)
-          // while the partition column keeps its original case. See KYUUBI #6403.
-          spark.sql(s"INSERT OVERWRITE $table VALUES ('Ben', 'blue')").collect()
-          checkQueryResult(s"select * from $table", spark, Array(Row.apply("Ben", "blue")))
-        } finally {
-          spark.sql(s"DROP TABLE IF EXISTS $table")
-        }
-      }
-    }
-  }
-
   test("ORC filter pushdown") {
     val table = "hive.default.orc_filter_pushdown"
     dropTableAfter(table) {

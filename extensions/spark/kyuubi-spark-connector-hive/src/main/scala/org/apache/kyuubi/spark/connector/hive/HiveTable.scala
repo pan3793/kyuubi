@@ -46,7 +46,10 @@ import org.apache.kyuubi.spark.connector.hive.write.HiveWriteBuilder
 case class HiveTable(
     sparkSession: SparkSession,
     catalogTable: CatalogTable,
-    hiveTableCatalog: HiveTableCatalog)
+    hiveTableCatalog: HiveTableCatalog,
+    // Set by HiveTableCatalog.createTable to keep the column order requested by the user, which
+    // the metastore does not preserve. See KYUUBI #6403.
+    requestedSchema: Option[StructType] = None)
   extends Table with SupportsRead with SupportsWrite with Logging {
 
   lazy val dataSchema: StructType = catalogTable.dataSchema
@@ -86,7 +89,7 @@ case class HiveTable(
     }
   }
 
-  override def schema(): StructType = catalogTable.schema
+  override def schema(): StructType = requestedSchema.getOrElse(catalogTable.schema)
 
   override def properties(): util.Map[String, String] = catalogTable.properties.asJava
 

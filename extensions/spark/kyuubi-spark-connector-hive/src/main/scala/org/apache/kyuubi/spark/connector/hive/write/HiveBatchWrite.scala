@@ -154,20 +154,18 @@ class HiveBatchWrite(
 
         val caseInsensitiveDpMap = CaseInsensitiveMap(dpMap)
 
-        // Lower-case the partition column names when reconstructing the path: the written
-        // directory is lower-cased while the restored table.partitionColumnNames may keep the
-        // original case, which would miss the directory on a case-sensitive FS. See KYUUBI #6403.
+        // The written directories carry the lower-cased partition column names, see
+        // HiveWrite.outputPartColumns, while table.partitionColumnNames keeps the user's case.
         val updatedPartitionSpec = dynamicPartition.map {
-          case (key, Some(null)) =>
-            key.toLowerCase(Locale.ROOT) -> ExternalCatalogUtils.DEFAULT_PARTITION_NAME
-          case (key, Some(value)) => key.toLowerCase(Locale.ROOT) -> value
+          case (key, Some(null)) => key -> ExternalCatalogUtils.DEFAULT_PARTITION_NAME
+          case (key, Some(value)) => key -> value
           case (key, None) if caseInsensitiveDpMap.contains(key) =>
-            key.toLowerCase(Locale.ROOT) -> caseInsensitiveDpMap(key)
+            key -> caseInsensitiveDpMap(key)
           case (key, _) =>
             throw KyuubiHiveConnectorException(
               s"Dynamic partition key ${toSQLValue(key, StringType)} " +
                 "is not among written partition paths.")
-        }
+        }.map { case (key, value) => key.toLowerCase(Locale.ROOT) -> value }
         val partitionColumnNames = table.partitionColumnNames.map(_.toLowerCase(Locale.ROOT))
         val tablePath = new Path(table.location)
         val partitionPath = ExternalCatalogUtils.generatePartitionPath(
